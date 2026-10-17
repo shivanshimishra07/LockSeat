@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 
 import asyncpg
 import redis.asyncio as aioredis
@@ -17,10 +18,19 @@ DB_POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "50"))
 DB_COMMAND_TIMEOUT = float(os.getenv("DB_COMMAND_TIMEOUT", "30"))
 REDIS_MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "100"))
 
+# Redis is an optimisation, so it must never stall a request for long.
+REDIS_SOCKET_TIMEOUT = float(os.getenv("REDIS_SOCKET_TIMEOUT", "0.5"))
+# After a Redis failure, skip Redis entirely for this many seconds (circuit breaker).
+REDIS_COOLDOWN_SECONDS = float(os.getenv("REDIS_COOLDOWN_SECONDS", "5"))
+
 _db_pool = None
 _redis_client = None
+_redis_down_until = 0.0  # time.monotonic() deadline; 0 means "healthy"
 
 
+# --------------------------------------------------------------------------- #
+# PostgreSQL
+# --------------------------------------------------------------------------- #
 async def init_db_pool():
     """Create the global asyncpg pool (idempotent)."""
     global _db_pool
@@ -57,17 +67,39 @@ def get_db_pool():
     return _db_pool
 
 
+async def get_db_conn():
+    """FastAPI dependency that yields an asyncpg database connection from the pool."""
+    pool = get_db_pool()
+    async with pool.acquire() as conn:
+        yield conn
+
+
+# --------------------------------------------------------------------------- #
+# Redis (optional dependency: failures degrade to Postgres-only mode)
+# --------------------------------------------------------------------------- #
 async def init_redis():
-    """Create the global Redis client with a bounded connection pool (idempotent)."""
+    """
+    Create the global Redis client (idempotent).
+
+    Does NOT raise if Redis is unreachable at startup: the app must be able to
+    boot and serve traffic in Postgres-only mode. redis-py connects lazily, so
+    the client starts working as soon as Redis comes back.
+    """
     global _redis_client
     if _redis_client is None:
         _redis_client = aioredis.from_url(
             REDIS_URL,
             max_connections=REDIS_MAX_CONNECTIONS,
             decode_responses=True,
+            socket_timeout=0.1,
+            socket_connect_timeout=0.1,
+            health_check_interval=15,
         )
-        await _redis_client.ping()
-        logger.info("Redis ready (max_connections=%d)", REDIS_MAX_CONNECTIONS)
+        try:
+            await _redis_client.ping()
+            logger.info("Redis ready (max_connections=%d)", REDIS_MAX_CONNECTIONS)
+        except Exception as exc:
+            mark_redis_failure("startup_ping", exc)
     return _redis_client
 
 
@@ -75,7 +107,10 @@ async def close_redis():
     """Gracefully close the Redis client and its pool."""
     global _redis_client
     if _redis_client is not None:
-        await _redis_client.aclose()
+        try:
+            await _redis_client.aclose()
+        except Exception as exc:
+            logger.warning("Error while closing Redis: %s", exc)
         _redis_client = None
         logger.info("Redis closed")
 
@@ -86,8 +121,36 @@ def get_redis():
         raise RuntimeError("Redis client is not initialised")
     return _redis_client
 
-async def get_db_conn():
-    """FastAPI dependency that yields an asyncpg database connection from the pool."""
-    pool = get_db_pool()
-    async with pool.acquire() as conn:
-        yield conn
+
+def get_redis_or_none():
+    """
+    Return the Redis client, or None when Redis should be bypassed
+    (not initialised, or inside the post-failure cooldown window).
+    """
+    if _redis_client is None:
+        return None
+    if _redis_down_until and time.monotonic() < _redis_down_until:
+        return None
+    return _redis_client
+
+
+def mark_redis_failure(operation, exc):
+    """Record a Redis failure, open the cooldown window and log a structured warning."""
+    global _redis_down_until
+    _redis_down_until = time.monotonic() + REDIS_COOLDOWN_SECONDS
+    logger.warning(
+        "Redis connection failed. Falling back to Postgres DB-only mode "
+        "(operation=%s error_type=%s error=%s cooldown_s=%.1f)",
+        operation,
+        type(exc).__name__,
+        exc,
+        REDIS_COOLDOWN_SECONDS,
+    )
+
+
+def mark_redis_success():
+    """Record a successful Redis call; closes the cooldown window if it was open."""
+    global _redis_down_until
+    if _redis_down_until:
+        _redis_down_until = 0.0
+        logger.info("Redis connection restored. Fast-path re-enabled")
