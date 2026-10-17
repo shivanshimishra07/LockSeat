@@ -247,4 +247,8 @@ A clean re-run (reset, run k6 from a separate machine, run `verify.sql`) is the 
 └── README.md
 ```
 
+<<<<<<< HEAD
 See [DECISIONS.md](DECISIONS.md) for trade-offs and known limitations.
+=======
+See [DECISIONS.md](DECISIONS.md) for trade-offs and known limitations.
+>>>>>>> d6b84c1 (added README.md and DECISIONS.md)
