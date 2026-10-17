@@ -4,6 +4,15 @@ import time
 
 import asyncpg
 import redis.asyncio as aioredis
+import asyncio
+
+# Limit total concurrent DB operations per worker
+DB_SEMAPHORE = asyncio.Semaphore(30)
+
+async def execute_db_query(query_func, *args, **kwargs):
+    async with DB_SEMAPHORE:
+        return await query_func(*args, **kwargs)
+    
 
 logger = logging.getLogger("app.db")
 
