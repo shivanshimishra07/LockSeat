@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.git/
+.venv/
+venv/
+.env
+loadtest/
+test_concurrency.py
