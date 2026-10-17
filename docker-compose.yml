@@ -36,6 +36,8 @@ services:
       DATABASE_URL: postgresql://postgres:postgrespassword@db:5432/reservation_db
       REDIS_URL: redis://redis:6379/0
       DB_POOL_MAX_SIZE: "60"
+      HOLD_SECONDS: ${HOLD_SECONDS:-300}
+      SWEEPER_INTERVAL_SECONDS: ${SWEEPER_INTERVAL_SECONDS:-10}
     ports:
       - "${APP_HOST_PORT}:8000"
     depends_on:

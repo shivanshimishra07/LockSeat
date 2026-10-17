@@ -19,9 +19,17 @@ DB_COMMAND_TIMEOUT = float(os.getenv("DB_COMMAND_TIMEOUT", "30"))
 REDIS_MAX_CONNECTIONS = int(os.getenv("REDIS_MAX_CONNECTIONS", "100"))
 
 # Redis is an optimisation, so it must never stall a request for long.
-REDIS_SOCKET_TIMEOUT = float(os.getenv("REDIS_SOCKET_TIMEOUT", "0.5"))
+REDIS_SOCKET_TIMEOUT = float(os.getenv("REDIS_SOCKET_TIMEOUT", "0.1"))
 # After a Redis failure, skip Redis entirely for this many seconds (circuit breaker).
 REDIS_COOLDOWN_SECONDS = float(os.getenv("REDIS_COOLDOWN_SECONDS", "5"))
+
+# --- Step 3 lifecycle configuration ---------------------------------------- #
+# How long a HELD reservation lasts before it expires (set to 10 for testing).
+HOLD_SECONDS = int(os.getenv("HOLD_SECONDS", "300"))
+# How often the background sweeper runs.
+SWEEPER_INTERVAL_SECONDS = float(os.getenv("SWEEPER_INTERVAL_SECONDS", "10"))
+# Simulated ticket price passed to the payment simulator.
+TICKET_PRICE = float(os.getenv("TICKET_PRICE", "49.99"))
 
 _db_pool = None
 _redis_client = None
@@ -91,8 +99,8 @@ async def init_redis():
             REDIS_URL,
             max_connections=REDIS_MAX_CONNECTIONS,
             decode_responses=True,
-            socket_timeout=0.1,
-            socket_connect_timeout=0.1,
+            socket_timeout=REDIS_SOCKET_TIMEOUT,
+            socket_connect_timeout=REDIS_SOCKET_TIMEOUT,
             health_check_interval=15,
         )
         try:
